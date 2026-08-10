@@ -83,6 +83,15 @@ services:
     image: postgres:15-alpine
     container_name: evolution-postgres
     restart: unless-stopped
+    # O evolution-go abre um pool próprio de 25 conexões por cliente WhatsApp
+    # (sqlstore.New em cada StartClient), somado a 3 pools de 25 no boot.
+    # O default de max_connections=100 estoura já na 1ª/2ª instância.
+    command:
+      - postgres
+      - -c
+      - max_connections=500
+      - -c
+      - shared_buffers=256MB
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
