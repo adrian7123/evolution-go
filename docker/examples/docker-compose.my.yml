@@ -1,27 +1,49 @@
-version: "3.8"
+name: evolution-go
+
+# Este compose sobe APENAS a aplicação.
+# PostgreSQL, RabbitMQ e S3 são serviços externos (fora deste compose).
+# Preencha os valores em um arquivo .env ao lado deste arquivo (veja .env.my.example).
+
+networks:
+  dokploy-network:
+    name: dokploy-network
+    external: true
 
 services:
   evolution-go:
-    image: evoapicloud/evolution-go:latest
+    # Build a partir do fonte local (raiz do repo, dois níveis acima deste arquivo).
+    # O contexto é resolvido relativo à localização do compose, não ao cwd.
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      args:
+        VERSION: ${VERSION:-dev}
+    image: evolution-go:local
     container_name: evolution-go
     restart: unless-stopped
     ports:
       - "4000:4000"
+    # Permite alcançar serviços rodando no host da máquina via host.docker.internal
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
       # Servidor
       SERVER_PORT: 4000
       CLIENT_NAME: ${CLIENT_NAME:-evolution}
 
       # Segurança
-      GLOBAL_API_KEY: ${GLOBAL_API_KEY:-sua-chave-api-segura-aqui}
+      GLOBAL_API_KEY: ${GLOBAL_API_KEY:?defina GLOBAL_API_KEY no .env}
 
-      # Banco de Dados PostgreSQL
-      POSTGRES_AUTH_DB: "postgresql://postgres:postgres@postgres:5432/evogo_auth?sslmode=disable"
-      POSTGRES_USERS_DB: "postgresql://postgres:postgres@postgres:5432/evogo_users?sslmode=disable"
+      # ------------------------------------------------------------------
+      # PostgreSQL EXTERNO
+      # Ex.: postgresql://usuario:senha@meu-host:5432/evogo_auth?sslmode=require
+      # ------------------------------------------------------------------
+      POSTGRES_AUTH_DB: ${POSTGRES_AUTH_DB:?defina POSTGRES_AUTH_DB no .env}
+      POSTGRES_USERS_DB: ${POSTGRES_USERS_DB:?defina POSTGRES_USERS_DB no .env}
       DATABASE_SAVE_MESSAGES: ${DATABASE_SAVE_MESSAGES:-false}
 
       # Logs e Debug
-      WADEBUG: "DEBUG"
+      WADEBUG: ${WADEBUG:-INFO}
       LOGTYPE: "console"
       LOG_DIRECTORY: "/app/logs"
       LOG_MAX_SIZE: "100"
@@ -37,27 +59,39 @@ services:
       OS_NAME: "Linux"
 
       # Webhook (global — deixe vazio; webhooks são configurados por instância via API)
-      WEBHOOK_URL: ""
+      WEBHOOK_URL: ${WEBHOOK_URL:-}
 
-      # RabbitMQ
-      AMQP_URL: "amqp://admin:admin@rabbitmq:5672/default"
-      AMQP_GLOBAL_ENABLED: "true"
-      AMQP_GLOBAL_EVENTS: "messages.upsert,messages.update,connection.update"
-      AMQP_SPECIFIC_EVENTS: ""
+      # ------------------------------------------------------------------
+      # RabbitMQ EXTERNO
+      # Ex.: amqps://usuario:senha@meu-host:5671/meu-vhost  (TLS)
+      #      amqp://usuario:senha@meu-host:5672/meu-vhost   (sem TLS)
+      # Obs.: vhost "/" precisa ser escapado como %2F na URL.
+      # ------------------------------------------------------------------
+      AMQP_URL: ${AMQP_URL:?defina AMQP_URL no .env}
+      AMQP_GLOBAL_ENABLED: ${AMQP_GLOBAL_ENABLED:-true}
+      AMQP_GLOBAL_EVENTS: ${AMQP_GLOBAL_EVENTS:-messages.upsert,messages.update,connection.update}
+      AMQP_SPECIFIC_EVENTS: ${AMQP_SPECIFIC_EVENTS:-}
 
-      # NATS
-      NATS_URL: "nats://nats:4222"
+      # NATS (desabilitado)
+      NATS_URL: ""
       NATS_GLOBAL_ENABLED: "false"
       NATS_GLOBAL_EVENTS: ""
 
-      # MinIO
-      MINIO_ENABLED: "true"
-      MINIO_ENDPOINT: "minio:9000"
-      MINIO_ACCESS_KEY: "minioadmin"
-      MINIO_SECRET_KEY: "minioadmin"
-      MINIO_BUCKET: "evolution-media"
-      MINIO_USE_SSL: "false"
-      MINIO_REGION: "us-east-1"
+      # ------------------------------------------------------------------
+      # Armazenamento de mídia — AWS S3 (cliente S3-compatible, prefixo MINIO_*)
+      # Endpoint regional da AWS, SEM https:// e SEM o nome do bucket:
+      #   s3.us-east-1.amazonaws.com
+      # MINIO_USE_SSL deve ser "true" para a AWS.
+      # Credenciais: use um IAM user com permissão no bucket
+      # (s3:PutObject, s3:GetObject, s3:DeleteObject, s3:ListBucket).
+      # ------------------------------------------------------------------
+      MINIO_ENABLED: ${MINIO_ENABLED:-true}
+      MINIO_ENDPOINT: ${S3_ENDPOINT:-s3.us-east-1.amazonaws.com}
+      MINIO_ACCESS_KEY: ${S3_ACCESS_KEY:?defina S3_ACCESS_KEY no .env}
+      MINIO_SECRET_KEY: ${S3_SECRET_KEY:?defina S3_SECRET_KEY no .env}
+      MINIO_BUCKET: ${S3_BUCKET:?defina S3_BUCKET no .env}
+      MINIO_USE_SSL: ${S3_USE_SSL:-true}
+      MINIO_REGION: ${S3_REGION:-us-east-1}
 
       # Eventos
       EVENT_IGNORE_GROUP: "false"
@@ -73,73 +107,10 @@ services:
       - evolution_data:/app/dbdata
       - evolution_logs:/app/logs
     networks:
-      - evolution_network
-    depends_on:
-      - postgres
-      - rabbitmq
-      - minio
-
-  postgres:
-    image: postgres:15-alpine
-    container_name: evolution-postgres
-    restart: unless-stopped
-    # O evolution-go abre um pool próprio de 25 conexões por cliente WhatsApp
-    # (sqlstore.New em cada StartClient), somado a 3 pools de 25 no boot.
-    # O default de max_connections=100 estoura já na 1ª/2ª instância.
-    command:
-      - postgres
-      - -c
-      - max_connections=500
-      - -c
-      - shared_buffers=256MB
-    environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: postgres
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-      - ./init-db.sql:/docker-entrypoint-initdb.d/init-db.sql
-    networks:
-      - evolution_network
-
-  rabbitmq:
-    image: rabbitmq:3-management-alpine
-    container_name: evolution-rabbitmq
-    restart: unless-stopped
-    environment:
-      RABBITMQ_DEFAULT_USER: admin
-      RABBITMQ_DEFAULT_PASS: admin
-      RABBITMQ_DEFAULT_VHOST: default
-    volumes:
-      - rabbitmq_data:/var/lib/rabbitmq
-    networks:
-      - evolution_network
-
-  minio:
-    image: minio/minio:latest
-    container_name: evolution-minio
-    restart: unless-stopped
-    command: server /data --console-address ":9001"
-    environment:
-      MINIO_ROOT_USER: minioadmin
-      MINIO_ROOT_PASSWORD: minioadmin
-    volumes:
-      - minio_data:/data
-    networks:
-      - evolution_network
+      - dokploy-network
 
 volumes:
   evolution_data:
     driver: local
   evolution_logs:
     driver: local
-  postgres_data:
-    driver: local
-  rabbitmq_data:
-    driver: local
-  minio_data:
-    driver: local
-
-networks:
-  evolution_network:
-    driver: bridge
