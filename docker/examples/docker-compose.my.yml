@@ -36,7 +36,9 @@ services:
 
       # ------------------------------------------------------------------
       # PostgreSQL EXTERNO
-      # Ex.: postgresql://usuario:senha@meu-host:5432/evogo_auth?sslmode=require
+      # Ex.: postgresql://usuario:senha@meu-host:5432/evogo_auth?sslmode=disable
+      # Use sslmode=disable para Postgres na mesma rede Docker (sem TLS no servidor)
+      # e sslmode=require apenas para bancos gerenciados/expostos (RDS, Neon, etc).
       # ------------------------------------------------------------------
       POSTGRES_AUTH_DB: ${POSTGRES_AUTH_DB:?defina POSTGRES_AUTH_DB no .env}
       POSTGRES_USERS_DB: ${POSTGRES_USERS_DB:?defina POSTGRES_USERS_DB no .env}
